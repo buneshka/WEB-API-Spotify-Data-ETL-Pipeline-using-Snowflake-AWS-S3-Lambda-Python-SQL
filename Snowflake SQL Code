@@ -1,0 +1,99 @@
+CREATE DATABASE spotify_etl;
+USE DATABASE spotify_etl;
+CREATE SCHEMA public;
+USE SCHEMA public;
+
+CREATE TABLE tblAlbum (
+    album_id STRING,
+    album_name STRING,
+    release_date STRING,
+    total_tracks INTEGER
+);
+
+CREATE TABLE tblArtist (
+    artist_id STRING,
+    artist_name STRING,
+    artist_url STRING
+);
+
+CREATE TABLE tblSongs (
+    track_id STRING,
+    track_name STRING,
+    duration INTEGER,
+    external_url STRING,
+    popularity INTEGER,
+    artist_id STRING,
+    album_id STRING
+);
+
+CREATE STORAGE INTEGRATION s3_integration_spotify
+   TYPE = EXTERNAL_STAGE
+   STORAGE_PROVIDER = S3
+   ENABLED = TRUE
+   STORAGE_AWS_ROLE_ARN = 'arn:aws:iam::302263053946:role/service-role/spotify_api_data_extract-role-ztqq3651'
+   STORAGE_ALLOWED_LOCATIONS = ('s3://spotify-etl-project-buneshka/transformed_data/');
+
+DESC INTEGRATION s3_integration_spotify
+
+USE SCHEMA SPOTIFY_ETL.public;
+
+--Create a Storage Stage in Snowflake
+CREATE OR REPLACE STAGE spotify_artist_data_stage
+  STORAGE_INTEGRATION = s3_integration_spotify
+  URL = 's3://spotify-etl-project-buneshka/transformed_data/'
+
+--Test the Snowflake S3 Connection
+LIST @spotify_artist_data_stage
+LIST @spotify_artist_data_stage/artist_data;
+LIST @spotify_artist_data_stage/album_data;
+LIST @spotify_artist_data_stage/songs_data;
+
+-- Test the Snowflake COPY INTO Command
+COPY INTO tblArtist
+FROM @spotify_artist_data_stage/artist_data/
+FILE_FORMAT = (type = CSV field_delimiter = ",",skip_header=1)
+
+COPY INTO tblAlbum
+FROM @spotify_artist_data_stage/album_data/
+FILE_FORMAT = (type = CSV field_delimiter = ",",skip_header=1,FIELD_OPTIONALLY_ENCLOSED_BY = '"')
+
+COPY INTO tblSongs
+FROM @spotify_artist_data_stage/songs_data/
+FILE_FORMAT = (type = CSV field_delimiter = ",",skip_header=1)
+
+--Create Snowpipes for Continuous Data Loading
+CREATE OR REPLACE PIPE artist_data_pipe
+  AUTO_INGEST = TRUE
+  AS
+  COPY INTO tblArtist
+  FROM @spotify_artist_data_stage/artist_data/
+  FILE_FORMAT = (type = CSV field_delimiter = ",",skip_header=1);
+
+CREATE OR REPLACE PIPE album_data_pipe
+  AUTO_INGEST = TRUE
+  AS
+  COPY INTO tblAlbum
+  FROM @spotify_artist_data_stage/album_data/
+  FILE_FORMAT = (type = CSV field_delimiter = ",",skip_header=1);
+
+CREATE OR REPLACE PIPE songs_data_pipe
+  AUTO_INGEST = TRUE
+  AS
+  COPY INTO tblSongs
+  FROM @spotify_artist_data_stage/songs_data/
+  FILE_FORMAT = (type = CSV field_delimiter = ",",skip_header=1);
+
+
+SELECT * FROM tblSongs
+SELECT * FROM tblAlbum
+SELECT * FROM tblArtist
+
+
+
+
+
+
+
+
+
+

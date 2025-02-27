@@ -1,0 +1,101 @@
+import json
+import boto3
+from datetime import datetime
+from io import StringIO
+import pandas as pd
+
+def lambda_handler(event, context):
+
+    # S3 client
+    s3 = boto3.client('s3')
+    Bucket = "spotify-etl-project-buneshka"
+    Key = "raw_data/to_processed/"
+
+    # Retrieve the artist_data.json file from S3
+    artist_data_file = "artist_data.json"
+    response = s3.get_object(Bucket=Bucket, Key=Key + artist_data_file)
+    content = response['Body']
+    artist_data = json.loads(content.read())  # Load the JSON content   
+    
+    # Initialize lists to store song, artist, and album data
+    song_list = []
+    artist_list = []
+    album_list = []
+
+    # Parse JSON and populate DataFrames
+    for track in artist_data['tracks']:
+        # Song Data
+        song_element = { 
+            'song_id': track['id'],
+            'song_name': track['name'],
+            'duration_ms': track['duration_ms'],
+            'url': track['external_urls']['spotify'],
+            'popularity': track['popularity'],
+            'album_id': track['album']['id'],
+            'artist_id': track['artists'][0]['id']
+        }
+        song_list.append(song_element)
+
+        # Album Data
+        album_element = {
+            'album_id': track['album']['id'],
+            'name': track['album']['name'],
+            'release_date': track['album']['release_date'],
+            'total_tracks': track['album']['total_tracks'],
+            'url': track['album']['external_urls']['spotify']
+        }
+        album_list.append(album_element)
+
+        # Artist Data (handling multiple artists in a track)
+        for artist in track['artists']:
+            artist_element = {
+                'artist_id': artist['id'],
+                'artist_name': artist['name'],
+                'external_url': artist['external_urls']['spotify']
+            }
+            artist_list.append(artist_element)
+
+    # Create DataFrames
+    songs_df = pd.DataFrame(song_list)
+    albums_df = pd.DataFrame(album_list)
+    artists_df = pd.DataFrame(artist_list)
+
+    # Drop duplicate albums and artists (optional if API provides repeated entries)
+    albums_df.drop_duplicates(subset='album_id', inplace=True)
+    artists_df.drop_duplicates(subset='artist_id', inplace=True)
+
+    # Convert DataFrames to CSV format and upload to S3
+    # Save Songs Data to CSV and upload
+    songs_key = "transformed_data/songs_data/songs_transformed_" + str(datetime.now()) + ".csv"
+    song_buffer = StringIO()
+    songs_df.to_csv(song_buffer, index=False)
+    song_content = song_buffer.getvalue()
+    s3.put_object(Bucket=Bucket, Key=songs_key, Body=song_content)
+
+    # Save Albums Data to CSV and upload
+    album_key = "transformed_data/album_data/album_transformed_" + str(datetime.now()) + ".csv"
+    album_buffer = StringIO()
+    albums_df.to_csv(album_buffer, index=False)
+    album_content = album_buffer.getvalue()
+    s3.put_object(Bucket=Bucket, Key=album_key, Body=album_content)
+
+    # Save Artists Data to CSV and upload
+    artist_key = "transformed_data/artist_data/artist_transformed_" + str(datetime.now()) + ".csv"
+    artist_buffer = StringIO()
+    artists_df.to_csv(artist_buffer, index=False)
+    artist_content = artist_buffer.getvalue()
+    s3.put_object(Bucket=Bucket, Key=artist_key, Body=artist_content)
+
+    # Now, move the original artist_data.json from 'to_processed' to 'processed' and delete the original file
+    s3_resource = boto3.resource('s3')
+    copy_source = {
+        'Bucket': Bucket,
+        'Key': Key + artist_data_file
+    }
+    # Move the file to 'processed' folder
+    s3_resource.meta.client.copy(copy_source, Bucket, 'raw_data/processed/' + artist_data_file)
+    
+    # Delete the original file from 'to_processed' folder
+    s3_resource.Object(Bucket, Key + artist_data_file).delete()
+
+    print("✅ Transformation and upload complete!")

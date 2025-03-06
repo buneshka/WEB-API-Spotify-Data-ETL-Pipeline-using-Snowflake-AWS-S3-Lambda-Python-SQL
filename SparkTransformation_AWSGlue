@@ -1,0 +1,65 @@
+# TRANSFORMATION USING SPARK ON AWS GLUE
+
+import sys
+from awsglue.transforms import *
+from awsglue.utils import getResolvedOptions
+from pyspark.context import SparkContext
+from awsglue.context import GlueContext
+from awsglue.job import Job
+  
+sc = SparkContext.getOrCreate()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+job = Job(glueContext)
+from pyspark.sql.functions import explode, col, to_date
+from datetime import datetime
+from awsglue.dynamicframe import DynamicFrame
+
+s3_path = "s3://spotify-etl-project-buneshka/raw_data/to_processed/"
+source_df = glueContext.create_dynamic_frame_from_options(
+    connection_type = "s3",
+    connection_options = {"paths": [s3_path]},
+    format = "json"
+)
+source_df.show()
+spotify_df = source_df.toDF()
+spotify_df.show()
+album_data_df = spotify_df.withColumn("tracks", explode("tracks")).select(col("tracks.album.id").alias("album_id"),
+                                                           col("tracks.album.name").alias("album_name"),
+                                                           to_date(col("tracks.album.release_date"), "yyyy-MM-dd").alias("album_release_date"),
+                                                           col("tracks.album.total_tracks").alias("album_total_tracks"),
+                                                           col("tracks.album.external_urls.spotify").alias("album_url"),                                                        
+                                                         ).drop_duplicates(['album_id'])
+album_data_df.show(5)
+song_data_df = spotify_df.withColumn("tracks", explode("tracks")).select(col("tracks.id").alias("song_id"),
+                                                           col("tracks.name").alias("song_name"),
+                                                           col("tracks.duration_ms").alias("song_duration_ms"),
+                                                           col("tracks.external_urls.spotify").alias("song_url"),
+                                                           col("tracks.popularity").alias("song_popularity"),
+                                                           col("tracks.album.id").alias("album_id"),
+                                                           col("tracks.artists")[0]["id"].alias("artist_id")
+                                                         ).drop_duplicates(['album_id'])
+song_data_df.show(5)
+artist_data_df = spotify_df.withColumn("tracks", explode("tracks")) \
+    .withColumn("artist", explode(col("tracks.artists"))) \
+    .select(
+        col("artist.id").alias("artist_id"),
+        col("artist.name").alias("artist_name"),
+        col("artist.external_urls.spotify").alias("artist_url")
+    ).drop_duplicates(['artist_id'])
+
+artist_data_df.show(5)
+def write_to_s3(df, path_suffix, format_type="csv"):
+    dynamic_frame = DynamicFrame.fromDF(df, glueContext, "dynamic_frame")
+    
+    glueContext.write_dynamic_frame.from_options(
+        frame=dynamic_frame,
+        connection_type="s3",
+        connection_options={"path": f"s3://spotify-etl-project-buneshka/transformed_data/{path_suffix}/"},
+        format=format_type
+)
+
+write_to_s3(album_data_df,"album_data/album_transformed{}".format(datetime.now().strftime("%Y-%m-%d")), "csv")
+write_to_s3(artist_data_df,"artist_data/album_transformed{}".format(datetime.now().strftime("%Y-%m-%d")), "csv")
+write_to_s3(song_data_df,"songs_data/album_transformed{}".format(datetime.now().strftime("%Y-%m-%d")), "csv")
+job.commit()
